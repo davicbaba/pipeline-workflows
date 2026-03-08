@@ -1,0 +1,127 @@
+# Reusable workflow: bump minor version, commit, build, pack and publish to GitHub Packages.
+#
+# Usage from a caller workflow:
+#
+#   jobs:
+#     publish:
+#       uses: davicbaba/pipeline-workflows/.github/workflows/publish-nuget.yml@main
+#       with:
+#         project_path: src/MyProject/MyProject.csproj
+#         github_owner: davicbaba  # GitHub username that owns the Packages feed
+#       secrets:
+#         PUBLISH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+#
+# The caller workflow must set:
+#   permissions:
+#     contents: write   # to commit and push the version bump
+#     packages: write   # to publish the NuGet package
+
+name: Publish NuGet Package
+
+on:
+  workflow_call:
+    inputs:
+      project_path:
+        description: 'Path to the .csproj file relative to the repository root'
+        required: true
+        type: string
+
+      github_owner:
+        description: 'GitHub username or org that owns the Packages feed'
+        required: false
+        type: string
+        default: 'davicbaba'
+
+    secrets:
+      PUBLISH_TOKEN:
+        description: 'GitHub token with contents:write and packages:write permissions'
+        required: true
+
+    outputs:
+      version:
+        description: 'The new version that was published'
+        value: ${{ jobs.publish.outputs.version }}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+
+    steps:
+      # ── Checkout ────────────────────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # Use the caller's token so the version-bump commit can be pushed back.
+          token: ${{ secrets.PUBLISH_TOKEN }}
+
+      # ── .NET setup ──────────────────────────────────────────────────────────
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.x'
+          include-prerelease: true
+
+      # ── Version bump (minor only) ────────────────────────────────────────────
+      - name: Bump minor version in .csproj
+        id: bump
+        run: |
+          PROJECT_FILE="${{ inputs.project_path }}"
+
+          # Read current <Version> or fall back to 1.0.0
+          CURRENT=$(grep -oP '(?<=<Version>)[^<]+' "$PROJECT_FILE" || true)
+          if [ -z "$CURRENT" ]; then
+            CURRENT="1.0.0"
+          fi
+
+          IFS='.' read -ra PARTS <<< "$CURRENT"
+          MAJOR="${PARTS[0]:-1}"
+          MINOR="${PARTS[1]:-0}"
+          PATCH="${PARTS[2]:-0}"
+
+          # Always bump minor; patch stays as-is
+          MINOR=$((MINOR + 1))
+
+          NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+
+          # Update existing <Version> tag, or insert one before </PropertyGroup>
+          if grep -q '<Version>' "$PROJECT_FILE"; then
+            sed -i "s|<Version>[^<]*</Version>|<Version>${NEW_VERSION}</Version>|" "$PROJECT_FILE"
+          else
+            sed -i "s|</PropertyGroup>|  <Version>${NEW_VERSION}</Version>\n  </PropertyGroup>|1" "$PROJECT_FILE"
+          fi
+
+          echo "version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Bumped ${CURRENT} → ${NEW_VERSION}"
+
+      # ── Commit version bump ─────────────────────────────────────────────────
+      - name: Commit and push version bump
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "${{ inputs.project_path }}"
+          git commit -m "chore: bump version to ${{ steps.bump.outputs.version }} [skip ci]"
+          git push
+
+      # ── Build ───────────────────────────────────────────────────────────────
+      - name: Build
+        run: dotnet build "${{ inputs.project_path }}" --configuration Release
+
+      # ── Pack ────────────────────────────────────────────────────────────────
+      - name: Pack
+        run: |
+          dotnet pack "${{ inputs.project_path }}" \
+            --configuration Release \
+            --no-build \
+            --output ./nupkg
+
+      # ── Publish to GitHub Packages ──────────────────────────────────────────
+      - name: Push to GitHub Packages
+        run: |
+          dotnet nuget push ./nupkg/*.nupkg \
+            --source "https://nuget.pkg.github.com/${{ inputs.github_owner }}/index.json" \
+            --api-key "${{ secrets.PUBLISH_TOKEN }}" \
+            --skip-duplicate
