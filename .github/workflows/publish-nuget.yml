@@ -98,12 +98,15 @@ jobs:
           echo "Bumped ${CURRENT} → ${NEW_VERSION}"
 
       # ── Commit version bump ─────────────────────────────────────────────────
+      # git pull --rebase fetches any commits that landed between checkout and now
+      # (belt-and-suspenders alongside the caller's concurrency group).
       - name: Commit and push version bump
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add "${{ inputs.project_path }}"
           git commit -m "chore: bump version to ${{ steps.bump.outputs.version }} [skip ci]"
+          git pull --rebase origin "${{ github.ref_name }}"
           git push
 
       # ── Build ───────────────────────────────────────────────────────────────
