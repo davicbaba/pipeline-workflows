@@ -12,6 +12,7 @@
 # Usage from a caller workflow:
 #
 #   permissions:
+#     contents: read   # required for actions/checkout
 #     packages: write
 #
 #   jobs:

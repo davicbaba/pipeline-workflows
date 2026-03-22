@@ -18,10 +18,11 @@ Builds a Docker image and pushes to `ghcr.io/<repo-owner>/<image_name>` with tag
 
 ```yaml
 permissions:
+  contents: read
   packages: write
 ```
 
-(`contents: write` is not required; this workflow does not push commits to the repository.)
+`contents: read` is required so `actions/checkout` can clone the caller repository. If you set only `packages: write`, every other permission defaults to **none** and checkout fails with `Repository not found` on private repos. `contents: write` is not required (this workflow does not push commits).
 
 ### Caller example
 
