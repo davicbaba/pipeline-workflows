@@ -1,0 +1,142 @@
+# Reusable workflow: build Docker image and push to GHCR.
+# Restores NuGet against GitHub Packages (private feed) using a generated NuGet.config
+# passed as a BuildKit secret (no token in image layers).
+#
+# Tags each push as: <git-sha-7> and latest (no .csproj version bump).
+#
+# The Dockerfile must restore with:
+#   RUN --mount=type=secret,id=nuget_auth,required=false \
+#       bash -c '... dotnet restore --configfile /run/secrets/nuget_auth ...'
+# See README in this repo for a full example.
+#
+# Usage from a caller workflow:
+#
+#   permissions:
+#     packages: write
+#
+#   jobs:
+#     publish-image:
+#       uses: davicbaba/pipeline-workflows/.github/workflows/publish-ghcr-image.yml@main
+#       with:
+#         dockerfile_path: Rental.Api/Dockerfile
+#         context_path: .
+#         image_name: rental-api
+#         github_owner: davicbaba
+#       secrets:
+#         PUBLISH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+#
+# PUBLISH_TOKEN must allow: docker push to ghcr.io (packages:write) and read access to
+# NuGet packages on nuget.pkg.github.com (same token is used as password).
+
+name: Publish Docker image to GHCR
+
+on:
+  workflow_call:
+    inputs:
+      dockerfile_path:
+        description: 'Path to the Dockerfile (relative to repo root)'
+        required: true
+        type: string
+
+      context_path:
+        description: 'Docker build context path (relative to repo root)'
+        required: false
+        type: string
+        default: '.'
+
+      image_name:
+        description: 'GHCR image name without registry (lowercase), e.g. rental-api → ghcr.io/<owner>/rental-api'
+        required: true
+        type: string
+
+      github_owner:
+        description: 'GitHub user or org that owns the private NuGet feed (nuget.pkg.github.com)'
+        required: false
+        type: string
+        default: 'davicbaba'
+
+    secrets:
+      PUBLISH_TOKEN:
+        description: 'Token with packages:write and read access to GitHub Packages NuGet'
+        required: true
+
+    outputs:
+      git_sha_short:
+        description: 'First 7 characters of the commit SHA used as the immutable image tag'
+        value: ${{ jobs.publish.outputs.git_sha_short }}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    outputs:
+      git_sha_short: ${{ steps.sha.outputs.short }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Normalise image name (lowercase)
+        id: image
+        run: |
+          NAME=$(echo '${{ inputs.image_name }}' | tr '[:upper:]' '[:lower:]')
+          echo "name=${NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Git short SHA for image tag
+        id: sha
+        run: echo "short=${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
+
+      - name: Write NuGet config for Docker (GitHub Packages)
+        env:
+          NUGET_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
+          OWNER: ${{ inputs.github_owner }}
+        run: |
+          CONFIG="${RUNNER_TEMP}/nuget.ci.config"
+          cat > "$CONFIG" << EOF
+          <?xml version="1.0" encoding="utf-8"?>
+          <configuration>
+            <packageSources>
+              <add key="nuget.org" value="https://api.nuget.org/v3/index.json" protocolVersion="3" />
+              <add key="github-packages" value="https://nuget.pkg.github.com/${OWNER}/index.json" />
+            </packageSources>
+            <packageSourceCredentials>
+              <github-packages>
+                <add key="Username" value="${OWNER}" />
+                <add key="ClearTextPassword" value="${NUGET_TOKEN}" />
+              </github-packages>
+            </packageSourceCredentials>
+          </configuration>
+          EOF
+          echo "NUGET_CI_CONFIG=${CONFIG}" >> "$GITHUB_ENV"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.PUBLISH_TOKEN }}
+
+      - name: Compute image tags
+        id: meta
+        run: |
+          REG="ghcr.io/${{ github.repository_owner }}/${{ steps.image.outputs.name }}"
+          SHA="${{ steps.sha.outputs.short }}"
+          TAGS="${REG}:${SHA}"$'\n'"${REG}:latest"
+          {
+            echo 'tags<<EOF'
+            echo "$TAGS"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.context_path }}
+          file: ${{ inputs.dockerfile_path }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          secret-files: |
+            nuget_auth=${{ env.NUGET_CI_CONFIG }}
