@@ -132,3 +132,25 @@ The workflow generates a config with `nuget.org` plus `https://nuget.pkg.github.
 ### GHCR visibility
 
 New packages may default to **private**. Adjust visibility under the package settings on GitHub if the image should be public.
+
+## Trigger Dokploy deployment
+
+Workflow: [.github/workflows/trigger-dokploy-deploy.yml](.github/workflows/trigger-dokploy-deploy.yml).
+
+Sends `POST {base}/api/application.deploy` with `x-api-key` and body `{"applicationId":"..."}`.
+
+### Caller example
+
+```yaml
+jobs:
+  deploy:
+    needs: publish-image
+    uses: davicbaba/pipeline-workflows/.github/workflows/trigger-dokploy-deploy.yml@main
+    with:
+      dokploy_base_url: ${{ vars.DOKPLOY_BASE_URL }}
+      application_id: ${{ vars.DOKPLOY_APPLICATION_ID }}
+    secrets:
+      dokploy_api_key: ${{ secrets.DOKPLOY_API_KEY }}
+```
+
+Configure in the caller repo: **Variables** `DOKPLOY_BASE_URL`, `DOKPLOY_APPLICATION_ID`; **Secret** `DOKPLOY_API_KEY`.

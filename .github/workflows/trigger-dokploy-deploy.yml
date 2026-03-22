@@ -1,0 +1,55 @@
+# Reusable workflow: POST to Dokploy /api/application.deploy (trigger deployment).
+#
+# Dokploy docs: x-api-key header + JSON body { "applicationId": "..." }.
+#
+# Usage from a caller workflow:
+#
+#   jobs:
+#     deploy:
+#       uses: davicbaba/pipeline-workflows/.github/workflows/trigger-dokploy-deploy.yml@main
+#       with:
+#         dokploy_base_url: ${{ vars.DOKPLOY_BASE_URL }}
+#         application_id: ${{ vars.DOKPLOY_APPLICATION_ID }}
+#       secrets:
+#         dokploy_api_key: ${{ secrets.DOKPLOY_API_KEY }}
+#
+# dokploy_base_url: origin only, e.g. https://dokploy.example.com (no trailing slash required).
+
+name: Trigger Dokploy deployment
+
+on:
+  workflow_call:
+    inputs:
+      dokploy_base_url:
+        description: 'Dokploy origin URL (e.g. https://your-domain)'
+        required: true
+        type: string
+
+      application_id:
+        description: 'Dokploy application ID to deploy'
+        required: true
+        type: string
+
+    secrets:
+      dokploy_api_key:
+        description: 'Dokploy API token (x-api-key)'
+        required: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Dokploy deployment
+        env:
+          BASE_URL: ${{ inputs.dokploy_base_url }}
+          APPLICATION_ID: ${{ inputs.application_id }}
+          API_KEY: ${{ secrets.dokploy_api_key }}
+        run: |
+          set -euo pipefail
+          BASE="${BASE_URL%/}"
+          curl -fsS -X POST "${BASE}/api/application.deploy" \
+            -H 'accept: application/json' \
+            -H 'Content-Type: application/json' \
+            -H "x-api-key: ${API_KEY}" \
+            -d "{\"applicationId\":\"${APPLICATION_ID}\"}"
+          echo "Dokploy deployment triggered for applicationId=${APPLICATION_ID}"
