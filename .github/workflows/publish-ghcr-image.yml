@@ -3,6 +3,7 @@
 # passed as a BuildKit secret (no token in image layers).
 #
 # Tags each push as: <git-sha-7> and latest (no .csproj version bump).
+# Optional checkout_ref: exact commit/branch/ref to build (e.g. needs.bump.outputs.commit_sha).
 #
 # The Dockerfile must restore with:
 #   RUN --mount=type=secret,id=nuget_auth,required=false \
@@ -56,6 +57,12 @@ on:
         type: string
         default: 'davicbaba'
 
+      checkout_ref:
+        description: 'Git ref or full SHA to checkout; empty = use the workflow trigger commit (github.sha)'
+        required: false
+        type: string
+        default: ''
+
     secrets:
       PUBLISH_TOKEN:
         description: 'Token with packages:write and read access to GitHub Packages NuGet'
@@ -76,6 +83,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
 
       - name: Normalise image name (lowercase)
         id: image
@@ -85,7 +95,7 @@ jobs:
 
       - name: Git short SHA for image tag
         id: sha
-        run: echo "short=${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
+        run: echo "short=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Write NuGet config for Docker (GitHub Packages)
         env:

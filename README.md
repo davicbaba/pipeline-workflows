@@ -6,13 +6,47 @@ Reusable GitHub Actions workflows.
 
 See [.github/workflows/publish-nuget.yml](.github/workflows/publish-nuget.yml).
 
+## Bump .csproj minor version
+
+Workflow: [.github/workflows/bump-csproj-minor.yml](.github/workflows/bump-csproj-minor.yml).
+
+Increments **minor** in `<Version>` (`MAJOR.MINOR.PATCH` → `MAJOR.(MINOR+1).PATCH`), commits only that `.csproj`, rebases on the current branch, and pushes. No `dotnet build` / pack.
+
+### Caller permissions
+
+```yaml
+permissions:
+  contents: write
+```
+
+### Caller example
+
+```yaml
+on:
+  workflow_dispatch:
+
+jobs:
+  bump:
+    uses: davicbaba/pipeline-workflows/.github/workflows/bump-csproj-minor.yml@main
+    with:
+      project_path: Rental.Api/Rental.Api.csproj
+      # optional — default: chore: bump version to {version} [skip ci]
+      # commit_message: 'release: v{version}'
+    secrets:
+      PUBLISH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
+Optional input **`commit_message`**: use the placeholder `{version}` where the new version should appear.
+
+**Outputs:** `version`, `commit_sha` (full SHA after push; pass to `publish-ghcr-image` as `checkout_ref` so the image builds from the bump commit).
+
 ## Publish Docker image to GHCR
 
 Workflow: [.github/workflows/publish-ghcr-image.yml](.github/workflows/publish-ghcr-image.yml).
 
-Builds a Docker image and pushes to `ghcr.io/<repo-owner>/<image_name>` with tags **`<7-char-git-sha>`** and **`latest`**. No version bump or commits to the repo. During `dotnet restore`, authentication against **GitHub Packages (NuGet)** uses a temporary `NuGet.config` passed as a **BuildKit secret** (`nuget_auth`), so the token is not baked into image layers.
+Builds a Docker image and pushes to `ghcr.io/<repo-owner>/<image_name>` with tags **`<7-char-git-sha>`** and **`latest`**. The short tag is taken from **`git rev-parse HEAD`** after checkout (not `GITHUB_SHA`), so it matches the sources being built. Optional input **`checkout_ref`** (full SHA or ref) selects which commit to build; leave empty to use the workflow’s trigger commit (`github.sha`). During `dotnet restore`, authentication against **GitHub Packages (NuGet)** uses a temporary `NuGet.config` passed as a **BuildKit secret** (`nuget_auth`), so the token is not baked into image layers.
 
-**Output:** `git_sha_short` — first 7 characters of the commit SHA used as the immutable image tag.
+**Output:** `git_sha_short` — first 7 characters of `HEAD` after checkout.
 
 ### Caller permissions
 
@@ -40,6 +74,34 @@ jobs:
 ```
 
 Use a **PAT** as `PUBLISH_TOKEN` if `GITHUB_TOKEN` cannot read private packages (e.g. packages in another org). The same value is used for: `docker login` to GHCR, and NuGet password for `nuget.pkg.github.com`.
+
+### Chain after bump-csproj-minor
+
+```yaml
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  bump-version:
+    uses: davicbaba/pipeline-workflows/.github/workflows/bump-csproj-minor.yml@main
+    with:
+      project_path: Rental.Api/Rental.Api.csproj
+    secrets:
+      PUBLISH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-image:
+    needs: bump-version
+    uses: davicbaba/pipeline-workflows/.github/workflows/publish-ghcr-image.yml@main
+    with:
+      dockerfile_path: Rental.Api/Dockerfile
+      context_path: .
+      image_name: rental-api
+      github_owner: davicbaba
+      checkout_ref: ${{ needs.bump-version.outputs.commit_sha }}
+    secrets:
+      PUBLISH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
 
 ### Dockerfile requirement
 
