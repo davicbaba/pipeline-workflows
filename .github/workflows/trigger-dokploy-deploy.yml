@@ -45,11 +45,35 @@ jobs:
           APPLICATION_ID: ${{ inputs.application_id }}
           API_KEY: ${{ secrets.dokploy_api_key }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           BASE="${BASE_URL%/}"
-          curl -fsS -X POST "${BASE}/api/application.deploy" \
+          URL="${BASE}/api/application.deploy"
+          PAYLOAD="{\"applicationId\":\"${APPLICATION_ID}\"}"
+
+          echo "=== Dokploy trigger (debug) ==="
+          echo "Base URL (input): ${BASE_URL}"
+          echo "Base URL (normalized): ${BASE}"
+          echo "Full POST URL: ${URL}"
+          echo "Application ID: ${APPLICATION_ID}"
+          echo "Payload JSON: ${PAYLOAD}"
+          echo "(x-api-key is set: $([ -n "${API_KEY}" ] && echo yes || echo no); value is not logged)"
+          echo "================================"
+
+          HTTP_CODE=$(curl -sS -o /tmp/dokploy-response.body -w "%{http_code}" -X POST "${URL}" \
             -H 'accept: application/json' \
             -H 'Content-Type: application/json' \
             -H "x-api-key: ${API_KEY}" \
-            -d "{\"applicationId\":\"${APPLICATION_ID}\"}"
+            -d "${PAYLOAD}")
+
+          echo "HTTP status code: ${HTTP_CODE}"
+          echo "Response body:"
+          cat /tmp/dokploy-response.body
+          echo
+          echo "================================"
+
+          if [ "${HTTP_CODE}" -lt 200 ] || [ "${HTTP_CODE}" -ge 300 ]; then
+            echo "::error::Dokploy request failed with HTTP ${HTTP_CODE}"
+            exit 1
+          fi
+
           echo "Dokploy deployment triggered for applicationId=${APPLICATION_ID}"
