@@ -24,7 +24,7 @@
 #         context_path: .
 #         image_name: rental-api
 #         github_owner: davicbaba
-#         # optional: prune_old_versions: true, keep_image_versions: 5
+#         # optional: prune_old_versions: true, keep_image_versions: 5, ghcr_package_name: ''
 #       secrets:
 #         PUBLISH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 #
@@ -78,6 +78,12 @@ on:
         required: false
         type: number
         default: 5
+
+      ghcr_package_name:
+        description: 'Optional GitHub Packages API name for the container (path after ghcr.io/owner/). Default: same as image_name; use for nested names (e.g. group/app). The API usually expects only the image segment, not owner/image.'
+        required: false
+        type: string
+        default: ''
 
     secrets:
       PUBLISH_TOKEN:
@@ -180,34 +186,49 @@ jobs:
           OWNER: ${{ github.repository_owner }}
           IMAGE: ${{ steps.image.outputs.name }}
           KEEP: ${{ inputs.keep_image_versions }}
+          GHCR_PACKAGE_NAME: ${{ inputs.ghcr_package_name }}
         run: |
           set -euo pipefail
-          ENC=$(jq -rn --arg s "${OWNER}/${IMAGE}" '$s|@uri')
-          ORG_URL="https://api.github.com/orgs/${OWNER}/packages/container/${ENC}/versions"
-          USER_URL="https://api.github.com/users/${OWNER}/packages/container/${ENC}/versions"
-
-          code=$(curl -sS -o /tmp/gh_pkg_probe.json -w "%{http_code}" \
-            -H "Authorization: Bearer ${TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "${ORG_URL}?per_page=1")
-          if [ "$code" = "200" ]; then
-            LIST_BASE="$ORG_URL"
-            DELETE_KIND="orgs"
-          elif [ "$code" = "404" ]; then
-            code_u=$(curl -sS -o /tmp/gh_pkg_probe_u.json -w "%{http_code}" \
-              -H "Authorization: Bearer ${TOKEN}" \
-              -H "Accept: application/vnd.github+json" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              "${USER_URL}?per_page=1")
-            if [ "$code_u" != "200" ]; then
-              echo "::warning::Could not list GHCR package versions (org HTTP ${code}, user HTTP ${code_u}); skip pruning."
-              exit 0
-            fi
-            LIST_BASE="$USER_URL"
-            DELETE_KIND="users"
+          # GitHub REST API uses /orgs|users/{namespace}/packages/container/{package_name}/versions
+          # where package_name is the image segment for ghcr.io/NAMESPACE/IMAGE (not namespace/image).
+          # Fallback: some setups use owner%2Fimage as the package name — try both.
+          if [ -n "${GHCR_PACKAGE_NAME}" ]; then
+            CANDIDATES=("$(jq -rn --arg s "${GHCR_PACKAGE_NAME}" '$s|@uri')")
           else
-            echo "::warning::Unexpected HTTP ${code} listing org package versions; skip pruning."
+            ENC_IMAGE=$(jq -rn --arg s "${IMAGE}" '$s|@uri')
+            ENC_FULL=$(jq -rn --arg s "${OWNER}/${IMAGE}" '$s|@uri')
+            CANDIDATES=("${ENC_IMAGE}" "${ENC_FULL}")
+          fi
+
+          LIST_BASE=""
+          DELETE_KIND=""
+          ENC_SELECTED=""
+
+          for enc in "${CANDIDATES[@]}"; do
+            for kind in org user; do
+              if [ "$kind" = "org" ]; then
+                url="https://api.github.com/orgs/${OWNER}/packages/container/${enc}/versions"
+                dk="orgs"
+              else
+                url="https://api.github.com/users/${OWNER}/packages/container/${enc}/versions"
+                dk="users"
+              fi
+              code=$(curl -sS -o /tmp/gh_pkg_probe.json -w "%{http_code}" \
+                -H "Authorization: Bearer ${TOKEN}" \
+                -H "Accept: application/vnd.github+json" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                "${url}?per_page=1")
+              if [ "$code" = "200" ]; then
+                LIST_BASE="${url}"
+                DELETE_KIND="${dk}"
+                ENC_SELECTED="${enc}"
+                break 2
+              fi
+            done
+          done
+
+          if [ -z "${LIST_BASE}" ]; then
+            echo "::warning::Could not list GHCR package versions (tried image-only and owner/image for org and user); skip pruning. Set input ghcr_package_name if your package name differs."
             exit 0
           fi
 
@@ -241,7 +262,7 @@ jobs:
 
           echo "Deleting ${n_del} older package version(s); keeping newest ${KEEP}."
           echo "$to_delete" | jq -r '.[]' | while read -r vid; do
-            del_url="https://api.github.com/${DELETE_KIND}/${OWNER}/packages/container/${ENC}/versions/${vid}"
+            del_url="https://api.github.com/${DELETE_KIND}/${OWNER}/packages/container/${ENC_SELECTED}/versions/${vid}"
             dcode=$(curl -sS -o /tmp/gh_del.json -w "%{http_code}" -X DELETE \
               -H "Authorization: Bearer ${TOKEN}" \
               -H "Accept: application/vnd.github+json" \
