@@ -24,11 +24,15 @@
 #         context_path: .
 #         image_name: rental-api
 #         github_owner: davicbaba
+#         # optional: prune_old_versions: true, keep_image_versions: 5
 #       secrets:
 #         PUBLISH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 #
 # PUBLISH_TOKEN must allow: docker push to ghcr.io (packages:write) and read access to
 # NuGet packages on nuget.pkg.github.com (same token is used as password).
+# Pruning old versions uses the same token against the Packages API; it must be allowed
+# to delete package versions (e.g. GITHUB_TOKEN with packages:write, or a PAT with
+# delete:packages in addition to read:packages).
 
 name: Publish Docker image to GHCR
 
@@ -63,6 +67,18 @@ on:
         type: string
         default: ''
 
+      prune_old_versions:
+        description: 'After push, delete older GHCR package versions so only the last keep_image_versions remain'
+        required: false
+        type: boolean
+        default: true
+
+      keep_image_versions:
+        description: 'How many newest image versions to keep in GHCR (by created_at); older versions are removed'
+        required: false
+        type: number
+        default: 5
+
     secrets:
       PUBLISH_TOKEN:
         description: 'Token with packages:write and read access to GitHub Packages NuGet'
@@ -76,6 +92,10 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
 
     outputs:
       git_sha_short: ${{ steps.sha.outputs.short }}
@@ -151,3 +171,84 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           secret-files: |
             nuget_auth=${{ env.NUGET_CI_CONFIG }}
+
+      - name: Prune old GHCR image versions
+        if: ${{ inputs.prune_old_versions && inputs.keep_image_versions > 0 }}
+        continue-on-error: true
+        env:
+          TOKEN: ${{ secrets.PUBLISH_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+          IMAGE: ${{ steps.image.outputs.name }}
+          KEEP: ${{ inputs.keep_image_versions }}
+        run: |
+          set -euo pipefail
+          ENC=$(jq -rn --arg s "${OWNER}/${IMAGE}" '$s|@uri')
+          ORG_URL="https://api.github.com/orgs/${OWNER}/packages/container/${ENC}/versions"
+          USER_URL="https://api.github.com/users/${OWNER}/packages/container/${ENC}/versions"
+
+          code=$(curl -sS -o /tmp/gh_pkg_probe.json -w "%{http_code}" \
+            -H "Authorization: Bearer ${TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "${ORG_URL}?per_page=1")
+          if [ "$code" = "200" ]; then
+            LIST_BASE="$ORG_URL"
+            DELETE_KIND="orgs"
+          elif [ "$code" = "404" ]; then
+            code_u=$(curl -sS -o /tmp/gh_pkg_probe_u.json -w "%{http_code}" \
+              -H "Authorization: Bearer ${TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "${USER_URL}?per_page=1")
+            if [ "$code_u" != "200" ]; then
+              echo "::warning::Could not list GHCR package versions (org HTTP ${code}, user HTTP ${code_u}); skip pruning."
+              exit 0
+            fi
+            LIST_BASE="$USER_URL"
+            DELETE_KIND="users"
+          else
+            echo "::warning::Unexpected HTTP ${code} listing org package versions; skip pruning."
+            exit 0
+          fi
+
+          page=1
+          acc='[]'
+          while true; do
+            body=$(curl -sS \
+              -H "Authorization: Bearer ${TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "${LIST_BASE}?per_page=100&page=${page}")
+            n=$(echo "$body" | jq 'length')
+            if [ "$n" -eq 0 ]; then
+              break
+            fi
+            acc=$(jq -n --argjson a "$acc" --argjson b "$body" '$a + $b')
+            if [ "$n" -lt 100 ]; then
+              break
+            fi
+            page=$((page + 1))
+          done
+
+          to_delete=$(echo "$acc" | jq -c --argjson k "$KEEP" \
+            'sort_by(.created_at) | reverse | .[$k:] | map(.id)')
+
+          n_del=$(echo "$to_delete" | jq 'length')
+          if [ "$n_del" -eq 0 ]; then
+            echo "Nothing to prune (total versions <= ${KEEP})."
+            exit 0
+          fi
+
+          echo "Deleting ${n_del} older package version(s); keeping newest ${KEEP}."
+          echo "$to_delete" | jq -r '.[]' | while read -r vid; do
+            del_url="https://api.github.com/${DELETE_KIND}/${OWNER}/packages/container/${ENC}/versions/${vid}"
+            dcode=$(curl -sS -o /tmp/gh_del.json -w "%{http_code}" -X DELETE \
+              -H "Authorization: Bearer ${TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "$del_url")
+            if [ "$dcode" != "204" ] && [ "$dcode" != "200" ]; then
+              echo "::warning::DELETE version ${vid} returned HTTP ${dcode}"
+              cat /tmp/gh_del.json >&2 || true
+            fi
+          done
