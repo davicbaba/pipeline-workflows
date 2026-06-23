@@ -1,0 +1,86 @@
+# Reusable workflow: trigger a Coolify deployment via its API.
+#
+# Coolify docs: GET {base}/api/v1/deploy?uuid=<uuid>&force=<bool>
+#   header: Authorization: Bearer <token>  (token needs `deploy` or `root` permission)
+#   uuid may be a comma-separated list of resource UUIDs.
+#
+# Usage from a caller workflow:
+#
+#   jobs:
+#     deploy:
+#       uses: davicbaba/pipeline-workflows/.github/workflows/trigger-coolify-deploy.yml@main
+#       with:
+#         coolify_base_url: ${{ vars.COOLIFY_BASE_URL }}
+#         resource_uuid: ${{ vars.COOLIFY_RESOURCE_UUID }}
+#         # optional: force: true   (rebuild without cache)
+#       secrets:
+#         coolify_api_token: ${{ secrets.COOLIFY_API_TOKEN }}
+#
+# coolify_base_url: origin only, e.g. https://coolify.example.com (no trailing slash required).
+
+name: Trigger Coolify deployment
+
+on:
+  workflow_call:
+    inputs:
+      coolify_base_url:
+        description: 'Coolify origin URL (e.g. https://coolify.example.com)'
+        required: true
+        type: string
+
+      resource_uuid:
+        description: 'Coolify resource UUID to deploy (comma-separated list also accepted)'
+        required: true
+        type: string
+
+      force:
+        description: 'Force rebuild without cache'
+        required: false
+        type: boolean
+        default: false
+
+    secrets:
+      coolify_api_token:
+        description: 'Coolify API token (Bearer) with deploy or root permission'
+        required: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Coolify deployment
+        env:
+          BASE_URL: ${{ inputs.coolify_base_url }}
+          RESOURCE_UUID: ${{ inputs.resource_uuid }}
+          FORCE: ${{ inputs.force }}
+          API_TOKEN: ${{ secrets.coolify_api_token }}
+        run: |
+          set -uo pipefail
+          BASE="${BASE_URL%/}"
+          URL="${BASE}/api/v1/deploy?uuid=${RESOURCE_UUID}&force=${FORCE}"
+
+          echo "=== Coolify trigger (debug) ==="
+          echo "Base URL (input): ${BASE_URL}"
+          echo "Base URL (normalized): ${BASE}"
+          echo "Full GET URL: ${URL}"
+          echo "Resource UUID: ${RESOURCE_UUID}"
+          echo "Force rebuild: ${FORCE}"
+          echo "(Bearer token is set: $([ -n "${API_TOKEN}" ] && echo yes || echo no); value is not logged)"
+          echo "================================"
+
+          HTTP_CODE=$(curl -sS -o /tmp/coolify-response.body -w "%{http_code}" --request GET "${URL}" \
+            -H 'accept: application/json' \
+            -H "Authorization: Bearer ${API_TOKEN}")
+
+          echo "HTTP status code: ${HTTP_CODE}"
+          echo "Response body:"
+          cat /tmp/coolify-response.body
+          echo
+          echo "================================"
+
+          if [ "${HTTP_CODE}" -lt 200 ] || [ "${HTTP_CODE}" -ge 300 ]; then
+            echo "::error::Coolify request failed with HTTP ${HTTP_CODE}"
+            exit 1
+          fi
+
+          echo "Coolify deployment triggered for uuid=${RESOURCE_UUID}"

@@ -154,3 +154,26 @@ jobs:
 ```
 
 Configure in the caller repo: **Variables** `DOKPLOY_BASE_URL`, `DOKPLOY_APPLICATION_ID`; **Secret** `DOKPLOY_API_KEY`.
+
+## Trigger Coolify deployment
+
+Workflow: [.github/workflows/trigger-coolify-deploy.yml](.github/workflows/trigger-coolify-deploy.yml).
+
+Sends `GET {base}/api/v1/deploy?uuid=<uuid>&force=<bool>` with header `Authorization: Bearer <token>`. The token needs the **`deploy`** (or `root`) permission. `resource_uuid` accepts a comma-separated list to deploy several resources at once.
+
+### Caller example
+
+```yaml
+jobs:
+  deploy:
+    needs: publish-image
+    uses: davicbaba/pipeline-workflows/.github/workflows/trigger-coolify-deploy.yml@main
+    with:
+      coolify_base_url: ${{ vars.COOLIFY_BASE_URL }}
+      resource_uuid: ${{ vars.COOLIFY_RESOURCE_UUID }}
+      # optional: force: true   # rebuild without cache
+    secrets:
+      coolify_api_token: ${{ secrets.COOLIFY_API_TOKEN }}
+```
+
+Configure in the caller repo: **Variables** `COOLIFY_BASE_URL`, `COOLIFY_RESOURCE_UUID`; **Secret** `COOLIFY_API_TOKEN`.
