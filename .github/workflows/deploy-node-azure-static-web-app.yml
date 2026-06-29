@@ -1,0 +1,99 @@
+# Reusable workflow: build a Node/npm static site and deploy it to Azure Static Web Apps.
+#
+# Scope: sites built with npm (Astro, Vite, etc.). For a .NET/Blazor WebAssembly app
+# use a dedicated dotnet-based workflow instead — the build toolchain differs
+# (dotnet publish -> wwwroot), even though the deploy step is the same.
+#
+# It builds the app (npm ci + build) in `app_dir`, then uploads the already-built
+# output with the official Azure SWA action (skip_app_build=true), so the build runs
+# on GitHub runners (full control over Node version) and Oryx is not involved.
+#
+# Usage from a caller workflow:
+#
+#   jobs:
+#     deploy:
+#       uses: davicbaba/pipeline-workflows/.github/workflows/deploy-node-azure-static-web-app.yml@main
+#       with:
+#         app_dir: Landing
+#         output_location: dist
+#       secrets:
+#         azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
+#
+# The deployment token comes from the Static Web App resource
+# (Azure Portal → your SWA → "Manage deployment token").
+
+name: Deploy Node site to Azure Static Web App
+
+on:
+  workflow_call:
+    inputs:
+      app_dir:
+        description: 'Directory containing the app to build (relative to repo root)'
+        required: true
+        type: string
+
+      output_location:
+        description: 'Build output directory, relative to app_dir'
+        required: false
+        type: string
+        default: 'dist'
+
+      node_version:
+        description: 'Node.js version to build with'
+        required: false
+        type: string
+        default: '20'
+
+      install_command:
+        description: 'Dependency install command'
+        required: false
+        type: string
+        default: 'npm ci'
+
+      build_command:
+        description: 'Build command'
+        required: false
+        type: string
+        default: 'npm run build'
+
+    secrets:
+      azure_static_web_apps_api_token:
+        description: 'Azure Static Web Apps deployment token'
+        required: true
+
+jobs:
+  build_and_deploy:
+    runs-on: ubuntu-latest
+    name: Build and deploy
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+          lfs: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: 'npm'
+          cache-dependency-path: ${{ inputs.app_dir }}/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ${{ inputs.app_dir }}
+        run: ${{ inputs.install_command }}
+
+      - name: Build
+        working-directory: ${{ inputs.app_dir }}
+        run: ${{ inputs.build_command }}
+
+      - name: Deploy to Azure Static Web Apps
+        uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ secrets.azure_static_web_apps_api_token }}
+          action: 'upload'
+          # Already built above; point app_location at the build output and skip Oryx.
+          app_location: '${{ inputs.app_dir }}/${{ inputs.output_location }}'
+          output_location: ''
+          skip_app_build: true
+          skip_api_build: true

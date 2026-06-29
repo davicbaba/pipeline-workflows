@@ -177,3 +177,43 @@ jobs:
 ```
 
 Configure in the caller repo: **Variables** `COOLIFY_BASE_URL`, `COOLIFY_RESOURCE_UUID`; **Secret** `COOLIFY_API_TOKEN`.
+
+## Deploy Node site to Azure Static Web App
+
+Workflow: [.github/workflows/deploy-node-azure-static-web-app.yml](.github/workflows/deploy-node-azure-static-web-app.yml).
+
+Builds an **npm-based** static site (`npm ci` + build) inside `app_dir` on the GitHub runner, then uploads the already-built output with the official `Azure/static-web-apps-deploy@v1` action (`skip_app_build: true`, so Oryx never runs and you control the Node version). Designed for static frameworks like **Astro**, Vite, Next (static export), etc.
+
+> **Scope:** Node/npm only. A **.NET / Blazor WebAssembly** app can also be hosted on Azure Static Web Apps, but it builds with `dotnet publish` (output `wwwroot`), so it needs a separate dotnet-based workflow — only the build differs, the deploy step is identical. (Blazor **Server** / interactive isn't static-hostable at all.)
+
+### Inputs
+
+| Input | Required | Default | Description |
+| --- | --- | --- | --- |
+| `app_dir` | yes | — | Directory with the app, relative to repo root (e.g. `Landing`). |
+| `output_location` | no | `dist` | Build output dir, relative to `app_dir`. |
+| `node_version` | no | `20` | Node.js version used to build. |
+| `install_command` | no | `npm ci` | Dependency install command. |
+| `build_command` | no | `npm run build` | Build command. |
+
+### Caller example
+
+```yaml
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Landing/**'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    uses: davicbaba/pipeline-workflows/.github/workflows/deploy-azure-static-web-app.yml@main
+    with:
+      app_dir: Landing
+      output_location: dist
+    secrets:
+      azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
+```
+
+Configure in the caller repo: **Secret** `AZURE_STATIC_WEB_APPS_API_TOKEN` — found in **Azure Portal → your Static Web App → Manage deployment token**. No GitHub `permissions` block is required (the workflow only checks out the caller repo and uploads via the token).
