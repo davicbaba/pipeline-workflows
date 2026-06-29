@@ -42,7 +42,7 @@ on:
         description: 'Node.js version to build with'
         required: false
         type: string
-        default: '20'
+        default: '22'
 
       install_command:
         description: 'Dependency install command'
