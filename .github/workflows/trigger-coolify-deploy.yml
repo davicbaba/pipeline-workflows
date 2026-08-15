@@ -1,8 +1,9 @@
 # Reusable workflow: trigger a Coolify deployment via its API.
 #
-# Coolify docs: GET {base}/api/v1/deploy?uuid=<uuid>&force=<bool>
+# Coolify docs: POST {base}/api/v1/deploy?uuid=<uuid>&force=<bool>
 #   header: Authorization: Bearer <token>  (token needs `deploy` or `root` permission)
 #   uuid may be a comma-separated list of resource UUIDs.
+#   (Era GET; Coolify lo cambió a POST y el GET ahora responde 405.)
 #
 # Usage from a caller workflow:
 #
@@ -62,13 +63,13 @@ jobs:
           echo "=== Coolify trigger (debug) ==="
           echo "Base URL (input): ${BASE_URL}"
           echo "Base URL (normalized): ${BASE}"
-          echo "Full GET URL: ${URL}"
+          echo "Full POST URL: ${URL}"
           echo "Resource UUID: ${RESOURCE_UUID}"
           echo "Force rebuild: ${FORCE}"
           echo "(Bearer token is set: $([ -n "${API_TOKEN}" ] && echo yes || echo no); value is not logged)"
           echo "================================"
 
-          HTTP_CODE=$(curl -sS -o /tmp/coolify-response.body -w "%{http_code}" --request GET "${URL}" \
+          HTTP_CODE=$(curl -sS -o /tmp/coolify-response.body -w "%{http_code}" --request POST "${URL}" \
             -H 'accept: application/json' \
             -H "Authorization: Bearer ${API_TOKEN}")
 

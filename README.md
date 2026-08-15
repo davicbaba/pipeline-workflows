@@ -159,7 +159,7 @@ Configure in the caller repo: **Variables** `DOKPLOY_BASE_URL`, `DOKPLOY_APPLICA
 
 Workflow: [.github/workflows/trigger-coolify-deploy.yml](.github/workflows/trigger-coolify-deploy.yml).
 
-Sends `GET {base}/api/v1/deploy?uuid=<uuid>&force=<bool>` with header `Authorization: Bearer <token>`. The token needs the **`deploy`** (or `root`) permission. `resource_uuid` accepts a comma-separated list to deploy several resources at once.
+Sends `POST {base}/api/v1/deploy?uuid=<uuid>&force=<bool>` with header `Authorization: Bearer <token>`. The token needs the **`deploy`** (or `root`) permission. `resource_uuid` accepts a comma-separated list to deploy several resources at once.
 
 ### Caller example
 
