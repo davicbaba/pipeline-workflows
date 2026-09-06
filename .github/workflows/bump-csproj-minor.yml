@@ -19,11 +19,16 @@
 #
 # Use a PAT with repo scope if GITHUB_TOKEN cannot push (e.g. workflow in fork).
 #
-# Concurrent runs: two jobs can race on push. This workflow retries fetch + rebase + push
-# with backoff. Callers should still use concurrency when possible, e.g.:
-#   concurrency:
-#     group: csproj-bump-${{ github.repository }}
-#     cancel-in-progress: false
+# Concurrent runs: handled here, so callers do NOT need a concurrency block.
+#   - The bump job declares its own concurrency group keyed on the CALLER's workflow and
+#     ref: inside a reusable workflow the github context belongs to the caller, so each
+#     calling pipeline gets its own group and never bumps the same .csproj twice at once.
+#   - Across different pipelines the push retries fetch + rebase + push with backoff,
+#     which serializes the pushes without queueing whole runs.
+#
+# Do NOT give callers a shared concurrency group. GitHub keeps only ONE pending run per
+# group, so a third run cancels the one that was waiting, with:
+#   "Canceling since a higher priority waiting request for <group> exists"
 
 name: Bump .csproj minor version
 
@@ -57,6 +62,13 @@ on:
 jobs:
   bump:
     runs-on: ubuntu-latest
+
+    # github.workflow / github.ref are the CALLER's, so this serializes only against
+    # other runs of the same calling pipeline on the same branch. Different pipelines
+    # run in parallel and rely on the rebase + retry push below.
+    concurrency:
+      group: csproj-bump-${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: false
 
     outputs:
       version: ${{ steps.bump.outputs.version }}

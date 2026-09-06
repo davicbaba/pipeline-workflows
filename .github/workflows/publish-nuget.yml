@@ -15,6 +15,17 @@
 #   permissions:
 #     contents: write   # to commit and push the version bump
 #     packages: write   # to publish the NuGet package
+#
+# Concurrent runs: handled here, so callers do NOT need a concurrency block.
+#   - The publish job declares its own concurrency group keyed on the CALLER's workflow
+#     and ref: inside a reusable workflow the github context belongs to the caller, so
+#     each calling pipeline gets its own group and never bumps the same .csproj twice.
+#   - Across different pipelines the push retries fetch + rebase + push with backoff,
+#     which serializes the pushes without queueing whole runs.
+#
+# Do NOT give callers a shared concurrency group. GitHub keeps only ONE pending run per
+# group, so a third run cancels the one that was waiting, with:
+#   "Canceling since a higher priority waiting request for <group> exists"
 
 name: Publish NuGet Package
 
@@ -45,6 +56,13 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+
+    # github.workflow / github.ref are the CALLER's, so this serializes only against
+    # other runs of the same calling pipeline on the same branch. Different pipelines
+    # run in parallel and rely on the rebase + retry push below.
+    concurrency:
+      group: csproj-bump-${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: false
 
     outputs:
       version: ${{ steps.bump.outputs.version }}
@@ -98,16 +116,41 @@ jobs:
           echo "Bumped ${CURRENT} → ${NEW_VERSION}"
 
       # ── Commit version bump ─────────────────────────────────────────────────
-      # git pull --rebase fetches any commits that landed between checkout and now
-      # (belt-and-suspenders alongside the caller's concurrency group).
+      # Other publish pipelines push their own bump commits concurrently, so a plain push
+      # loses the race. Retry fetch + rebase + push with backoff; each pipeline touches a
+      # different .csproj, so the rebase does not conflict.
       - name: Commit and push version bump
+        env:
+          VERSION: ${{ steps.bump.outputs.version }}
+          BRANCH: ${{ github.ref_name }}
         run: |
+          set -euo pipefail
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add "${{ inputs.project_path }}"
-          git commit -m "chore: bump version to ${{ steps.bump.outputs.version }} [skip ci]"
-          git pull --rebase origin "${{ github.ref_name }}"
-          git push
+          git commit -m "chore: bump version to ${VERSION} [skip ci]"
+
+          max_attempts=15
+          attempt=1
+          while [ "$attempt" -le "$max_attempts" ]; do
+            git fetch origin "$BRANCH"
+            if ! git rebase "origin/$BRANCH"; then
+              echo "::error::Rebase onto origin/$BRANCH failed (likely a conflicting bump of the same .csproj). Resolve manually."
+              git rebase --abort || true
+              exit 1
+            fi
+            if git push origin "HEAD:$BRANCH"; then
+              echo "Push succeeded on attempt $attempt"
+              break
+            fi
+            echo "Push rejected (attempt $attempt/$max_attempts); another job may have pushed. Retrying..."
+            sleep $((attempt * 2 + RANDOM % 6))
+            attempt=$((attempt + 1))
+          done
+          if [ "$attempt" -gt "$max_attempts" ]; then
+            echo "::error::Push failed after $max_attempts attempts"
+            exit 1
+          fi
 
       # ── Build ───────────────────────────────────────────────────────────────
       - name: Build
